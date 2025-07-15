@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
@@ -53,16 +54,20 @@ type callFrame struct {
 }
 
 type usdtTracer struct {
-	mu             sync.Mutex
-	logger         *lumberjack.Logger
-	callStack      []*callFrame
-	txHash         common.Hash
-	txFrom         common.Address
-	txTo           common.Address
-	blockNum       uint64
-	timestamp      uint64
-	gasPrice       uint64
-	blockTransfers []*usdtTransfer
+	mu               sync.Mutex
+	logger           *lumberjack.Logger
+	callStack        []*callFrame
+	txHash           common.Hash
+	txFrom           common.Address
+	txTo             common.Address
+	blockNum         uint64
+	timestamp        uint64
+	gasPrice         uint64
+	blockTransfers   []*usdtTransfer
+	pendingTransfers []*usdtTransfer
+	currentDate      string
+	configPath       string
+	txReceiptGasUsed uint64
 }
 
 func newUsdtTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
@@ -73,6 +78,7 @@ func newUsdtTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 	if config.Path == "" {
 		return nil, errors.New("usdt tracer output path is required")
 	}
+	configPath := config.Path
 	logger := &lumberjack.Logger{
 		Filename: filepath.Join(config.Path, "usdt_transfer.jsonl"),
 	}
@@ -80,12 +86,14 @@ func newUsdtTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 		logger.MaxSize = config.MaxSize
 	}
 	t := &usdtTracer{
-		logger: logger,
+		logger:     logger,
+		configPath: configPath,
 	}
 	return &tracing.Hooks{
 		OnBlockStart: t.onBlockStart,
 		OnBlockEnd:   t.onBlockEnd,
 		OnTxStart:    t.onTxStart,
+		OnTxEnd:      t.onTxEnd,
 		OnEnter:      t.onEnter,
 		OnExit:       t.onExit,
 		OnLog:        t.onLog,
@@ -96,6 +104,20 @@ func newUsdtTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 func (t *usdtTracer) onBlockStart(ev tracing.BlockEvent) {
 	t.blockNum = ev.Block.NumberU64()
 	t.timestamp = ev.Block.Time()
+
+	utc := time.Unix(int64(t.timestamp), 0).UTC()
+	dateStr := utc.Format("20060102") // YYYYMMDD
+	if t.logger == nil || t.currentDate != dateStr {
+		if t.logger != nil {
+			_ = t.logger.Close()
+		}
+		logPath := filepath.Join(t.configPath, fmt.Sprintf("usdt_transfer_%s.jsonl", dateStr))
+		t.logger = &lumberjack.Logger{
+			Filename: logPath,
+			MaxSize:  t.logger.MaxSize,
+		}
+		t.currentDate = dateStr
+	}
 }
 
 func (t *usdtTracer) onBlockEnd(err error) {
@@ -133,6 +155,18 @@ func (t *usdtTracer) onTxStart(vm *tracing.VMContext, tx *types.Transaction, fro
 	} else {
 		t.gasPrice = tx.GasPrice().Uint64()
 	}
+}
+
+func (t *usdtTracer) onTxEnd(receipt *types.Receipt, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.txTo == usdtContractAddress && receipt != nil {
+		for _, transfer := range t.pendingTransfers {
+			transfer.GasUsed = receipt.GasUsed
+		}
+	}
+	t.blockTransfers = append(t.blockTransfers, t.pendingTransfers...)
+	t.pendingTransfers = nil
 }
 
 func (t *usdtTracer) onEnter(depth int, typ byte, from, to common.Address, input []byte, gas uint64, value *big.Int) {
@@ -181,7 +215,7 @@ func (t *usdtTracer) onExit(depth int, output []byte, gasUsed uint64, err error,
 					GasUsed:     frame.GasUsed,
 					GasPrice:    t.gasPrice,
 				}
-				t.blockTransfers = append(t.blockTransfers, &transfer)
+				t.pendingTransfers = append(t.pendingTransfers, &transfer)
 			}
 		}
 	}
