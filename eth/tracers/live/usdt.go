@@ -160,12 +160,14 @@ func (t *usdtTracer) onTxStart(vm *tracing.VMContext, tx *types.Transaction, fro
 func (t *usdtTracer) onTxEnd(receipt *types.Receipt, err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.txTo == usdtContractAddress && receipt != nil {
-		for _, transfer := range t.pendingTransfers {
-			transfer.GasUsed = receipt.GasUsed
+	if receipt != nil && receipt.Status == types.ReceiptStatusSuccessful {
+		if t.txTo == usdtContractAddress {
+			for _, transfer := range t.pendingTransfers {
+				transfer.GasUsed = receipt.GasUsed
+			}
 		}
+		t.blockTransfers = append(t.blockTransfers, t.pendingTransfers...)
 	}
-	t.blockTransfers = append(t.blockTransfers, t.pendingTransfers...)
 	t.pendingTransfers = nil
 }
 
