@@ -161,9 +161,17 @@ func (t *usdtTracer) onTxEnd(receipt *types.Receipt, err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if receipt != nil && receipt.Status == types.ReceiptStatusSuccessful {
+		if receipt.EffectiveGasPrice != nil {
+			t.gasPrice = receipt.EffectiveGasPrice.Uint64()
+		}
 		if t.txTo == usdtContractAddress {
 			for _, transfer := range t.pendingTransfers {
 				transfer.GasUsed = receipt.GasUsed
+				transfer.GasPrice = t.gasPrice
+			}
+		} else {
+			for _, transfer := range t.pendingTransfers {
+				transfer.GasPrice = t.gasPrice
 			}
 		}
 		t.blockTransfers = append(t.blockTransfers, t.pendingTransfers...)
