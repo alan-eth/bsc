@@ -149,9 +149,15 @@ func (t *usdtTracer) onTxStart(vm *tracing.VMContext, tx *types.Transaction, fro
 	} else {
 		t.txTo = common.Address{}
 	}
-	// EIP-1559
 	if tx.Type() == types.DynamicFeeTxType {
-		t.gasPrice = tx.GasFeeCap().Uint64()
+		baseFee := vm.BaseFee
+		tip := tx.GasTipCap()
+		feeCap := tx.GasFeeCap()
+		effective := new(big.Int).Add(baseFee, tip)
+		if effective.Cmp(feeCap) > 0 {
+			effective.Set(feeCap)
+		}
+		t.gasPrice = effective.Uint64()
 	} else {
 		t.gasPrice = tx.GasPrice().Uint64()
 	}
@@ -161,17 +167,9 @@ func (t *usdtTracer) onTxEnd(receipt *types.Receipt, err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if receipt != nil && receipt.Status == types.ReceiptStatusSuccessful {
-		if receipt.EffectiveGasPrice != nil {
-			t.gasPrice = receipt.EffectiveGasPrice.Uint64()
-		}
 		if t.txTo == usdtContractAddress {
 			for _, transfer := range t.pendingTransfers {
 				transfer.GasUsed = receipt.GasUsed
-				transfer.GasPrice = t.gasPrice
-			}
-		} else {
-			for _, transfer := range t.pendingTransfers {
-				transfer.GasPrice = t.gasPrice
 			}
 		}
 		t.blockTransfers = append(t.blockTransfers, t.pendingTransfers...)
