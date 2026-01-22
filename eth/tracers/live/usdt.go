@@ -232,6 +232,7 @@ func (t *usdtTracer) onTxEnd(receipt *types.Receipt, err error) {
 		t.blockTransfers = append(t.blockTransfers, t.pendingTransfers...)
 	}
 	t.pendingTransfers = nil
+	t.callStack = nil
 }
 
 func (t *usdtTracer) onEnter(depth int, typ byte, from, to common.Address, input []byte, gas uint64, value *big.Int) {
@@ -248,25 +249,27 @@ func (t *usdtTracer) onEnter(depth int, typ byte, from, to common.Address, input
 func (t *usdtTracer) onExit(depth int, output []byte, gasUsed uint64, err error, reverted bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// No need to process if callStack is empty
+	if len(t.callStack) == 0 {
+		return
+	}
+	// set current frame gas used
+	frame := t.callStack[len(t.callStack)-1]
+	frame.GasUsed = gasUsed
 
 	if depth == 0 {
-		// Process the root frame if not reverted and callStack is not empty
+		// Only process if callStack has the root frame and hasn't been processed yet
 		if !reverted && len(t.callStack) > 0 {
 			t.internalTxsHandler(t.callStack[0])
 		}
-		// Clear callStack to prevent memory leak?
+		// Clear callStack after processing to prevent duplicate processing
+		// if onExit(depth=0) is called multiple times
 		t.callStack = nil
 		return
 	}
 
-	if len(t.callStack) == 0 {
-		return
-	}
-
 	// Pop the current frame
-	frame := t.callStack[len(t.callStack)-1]
 	t.callStack = t.callStack[:len(t.callStack)-1]
-	frame.GasUsed = gasUsed
 
 	// If reverted, drop this frame and all its children (they won't be added to parent)
 	if reverted {
